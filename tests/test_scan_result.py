@@ -1,6 +1,7 @@
 import pytest
 import os
 import json
+import stat
 from src.scan.scan_result import ScanResult, ReportFormatException
 
 @pytest.fixture
@@ -69,5 +70,70 @@ def test_get_scan_result_invalid_json(sample_scan_result, tmp_path):
     sample_scan_result.results_dir = str(results_dir)
     
     # Attempt to get the scan result
+    with pytest.raises(ReportFormatException):
+        sample_scan_result.get_scan_result("kubernetes")
+
+def test_get_scan_result_multiple_types(sample_scan_result, tmp_path):
+    """Test getting scan results for multiple scan types"""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    # Write two reports
+    kubernetes_report = {"results": [{"type": "kubernetes", "id": "KSV001"}]}
+    aws_report = {"results": [{"type": "aws", "id": "AWS001"}]}
+    with open(results_dir / "kubernetes.json", "w") as f:
+        json.dump(kubernetes_report, f)
+    with open(results_dir / "aws.json", "w") as f:
+        json.dump(aws_report, f)
+    sample_scan_result.results_dir = str(results_dir)
+    k8s_result = sample_scan_result.get_scan_result("kubernetes")
+    aws_result = sample_scan_result.get_scan_result("aws")
+    assert k8s_result["results"][0]["type"] == "kubernetes"
+    assert aws_result["results"][0]["type"] == "aws"
+
+def test_get_scan_result_empty_file(sample_scan_result, tmp_path):
+    """Test handling of empty results file"""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    report_path = results_dir / "kubernetes.json"
+    with open(report_path, "w") as f:
+        f.write("")
+    sample_scan_result.results_dir = str(results_dir)
+    with pytest.raises(ReportFormatException):
+        sample_scan_result.get_scan_result("kubernetes")
+
+def test_get_scan_result_permission_error(sample_scan_result, tmp_path):
+    """Test handling of permission error when reading results file"""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    report_path = results_dir / "kubernetes.json"
+    with open(report_path, "w") as f:
+        f.write("{}")
+    # Remove read permissions
+    os.chmod(report_path, 0)
+    sample_scan_result.results_dir = str(results_dir)
+    try:
+        with pytest.raises(Exception):
+            sample_scan_result.get_scan_result("kubernetes")
+    finally:
+        # Restore permissions so tmp_path can be cleaned up
+        os.chmod(report_path, stat.S_IWUSR | stat.S_IRUSR)
+
+def test_get_scan_result_directory_traversal(sample_scan_result, tmp_path):
+    """Test directory traversal attempt in scan type name"""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    sample_scan_result.results_dir = str(results_dir)
+    # Try to traverse directories
+    with pytest.raises(Exception):
+        sample_scan_result.get_scan_result("../etc/passwd")
+
+def test_get_scan_result_partial_json(sample_scan_result, tmp_path):
+    """Test handling of partial/corrupted JSON file"""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    report_path = results_dir / "kubernetes.json"
+    with open(report_path, "w") as f:
+        f.write("{\"results\": [")  # Incomplete JSON
+    sample_scan_result.results_dir = str(results_dir)
     with pytest.raises(ReportFormatException):
         sample_scan_result.get_scan_result("kubernetes") 
